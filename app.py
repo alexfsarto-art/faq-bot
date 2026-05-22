@@ -7,8 +7,9 @@ from openai import OpenAI
 
 app = Flask(__name__)
 
-URLS_FILE   = "urls.json"
 CONFIG_FILE = "config.json"
+URLS_FILE   = "urls.json"
+INFO_FILE   = "info_extra.txt"
 
 client = OpenAI(
     api_key=os.environ.get("MARITACA_API_KEY"),
@@ -32,9 +33,22 @@ def carregar_config():
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
-def salvar_config(config):
+def salvar_config(cfg):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+
+# ─── Info extra ──────────────────────────────────────────────────
+
+def carregar_info():
+    if not os.path.exists(INFO_FILE):
+        return ""
+    with open(INFO_FILE, "r", encoding="utf-8") as f:
+        return f.read().strip()
+
+def salvar_info(texto):
+    with open(INFO_FILE, "w", encoding="utf-8") as f:
+        f.write(texto.strip())
 
 
 # ─── URLs ────────────────────────────────────────────────────────
@@ -48,99 +62,6 @@ def carregar_urls():
 def salvar_urls(urls):
     with open(URLS_FILE, "w", encoding="utf-8") as f:
         json.dump(urls, f, ensure_ascii=False, indent=2)
-
-
-# ─── osTicket ────────────────────────────────────────────────────
-
-def buscar_base_conhecimento(pergunta):
-    """Busca artigos na base de conhecimento do osTicket."""
-    try:
-        headers = {
-            "X-API-Key": OSTICKET_KEY,
-            "Content-Type": "application/json",
-        }
-        # Busca FAQs públicas
-        url = f"{OSTICKET_URL}/api/kb/faqs.json"
-        resp = requests.get(url, headers=headers, timeout=8)
-        if resp.status_code != 200:
-            return ""
-
-        faqs = resp.json()
-        pergunta_lower = pergunta.lower()
-        resultados = []
-
-        for faq in faqs if isinstance(faqs, list) else faqs.get("faqs", []):
-            titulo   = faq.get("question", faq.get("title", ""))
-            conteudo = faq.get("answer",   faq.get("content", ""))
-            # Verifica relevância simples por palavras-chave
-            palavras = pergunta_lower.split()
-            if any(p in (titulo + conteudo).lower() for p in palavras if len(p) > 3):
-                resultados.append(f"Pergunta: {titulo}\nResposta: {conteudo}")
-
-        return "\n\n".join(resultados[:3]) if resultados else ""
-    except Exception:
-        return ""
-
-
-def verificar_chamados(email):
-    """Verifica chamados abertos de um cliente pelo e-mail."""
-    try:
-        headers = {
-            "X-API-Key": OSTICKET_KEY,
-            "Content-Type": "application/json",
-        }
-        url  = f"{OSTICKET_URL}/api/tickets.json?email={email}"
-        resp = requests.get(url, headers=headers, timeout=8)
-        if resp.status_code != 200:
-            return None
-
-        dados    = resp.json()
-        tickets  = dados if isinstance(dados, list) else dados.get("tickets", [])
-        abertos  = [t for t in tickets if t.get("status", "").lower() in ["open", "aberto"]]
-
-        if not abertos:
-            return "Não encontrei chamados abertos para esse e-mail."
-
-        linhas = [f"Encontrei {len(abertos)} chamado(s) aberto(s):"]
-        for t in abertos[:3]:
-            linhas.append(
-                f"• #{t.get('number', t.get('id', '?'))} — {t.get('subject', 'Sem assunto')} "
-                f"[{t.get('status', '')}]"
-            )
-        return "\n".join(linhas)
-    except Exception:
-        return None
-
-
-def abrir_chamado(nome, email, assunto, mensagem, topico_id=None):
-    """Abre um novo chamado no osTicket."""
-    try:
-        headers = {
-            "X-API-Key": OSTICKET_KEY,
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "name":     nome,
-            "email":    email,
-            "subject":  assunto,
-            "message":  f"data:text/html,{mensagem}",
-            "ip":       "0.0.0.0",
-        }
-        if topico_id:
-            payload["topicId"] = topico_id
-
-        url  = f"{OSTICKET_URL}/api/tickets.json"
-        resp = requests.post(url, headers=headers, json=payload, timeout=10)
-
-        if resp.status_code in [200, 201]:
-            numero = resp.text.strip().strip('"')
-            return f"Chamado #{numero} aberto com sucesso! Você receberá atualizações no e-mail {email}."
-        return None
-    except Exception:
-        return None
-
-
-# ─── Contexto de URLs ─────────────────────────────────────────────
 
 def ler_url(url):
     try:
@@ -156,16 +77,43 @@ def ler_url(url):
     except Exception:
         return ""
 
-def montar_contexto():
+def montar_contexto_urls():
     urls = carregar_urls()
     if not urls:
         return ""
-    ctx = "Informações da loja:\n\n"
+    ctx = ""
     for item in urls:
         c = ler_url(item["url"])
         if c:
             ctx += f"--- {item['nome']} ---\n{c}\n\n"
     return ctx
+
+
+# ─── osTicket ────────────────────────────────────────────────────
+
+def abrir_chamado(nome, email, assunto, mensagem):
+    try:
+        headers = {
+            "X-API-Key": OSTICKET_KEY,
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "name":    nome,
+            "email":   email,
+            "subject": assunto,
+            "message": f"data:text/html,{mensagem}",
+            "ip":      "0.0.0.0",
+        }
+        resp = requests.post(
+            f"{OSTICKET_URL}/api/tickets.json",
+            headers=headers, json=payload, timeout=10
+        )
+        if resp.status_code in [200, 201]:
+            numero = resp.text.strip().strip('"')
+            return numero
+        return None
+    except Exception:
+        return None
 
 
 # ─── Rotas ───────────────────────────────────────────────────────
@@ -185,10 +133,22 @@ def set_config():
     modelo = dados.get("modelo", "").strip()
     if modelo not in MODELOS_DISPONIVEIS:
         return jsonify({"erro": "Modelo inválido."}), 400
-    config = carregar_config()
-    config["modelo"] = modelo
-    salvar_config(config)
-    return jsonify({"ok": True, "modelo": modelo})
+    cfg = carregar_config()
+    cfg["modelo"] = modelo
+    salvar_config(cfg)
+    return jsonify({"ok": True})
+
+
+@app.route("/info", methods=["GET"])
+def get_info():
+    return jsonify({"texto": carregar_info()})
+
+@app.route("/info", methods=["POST"])
+def set_info():
+    dados = request.json
+    texto = dados.get("texto", "").strip()
+    salvar_info(texto)
+    return jsonify({"ok": True})
 
 
 @app.route("/urls", methods=["GET"])
@@ -199,7 +159,7 @@ def listar_urls():
 def adicionar_url():
     dados = request.json
     if not dados or not dados.get("url") or not dados.get("nome"):
-        return jsonify({"erro": "Informe 'url' e 'nome'."}), 400
+        return jsonify({"erro": "Informe url e nome."}), 400
     urls = carregar_urls()
     urls.append({"nome": dados["nome"], "url": dados["url"]})
     salvar_urls(urls)
@@ -209,7 +169,7 @@ def adicionar_url():
 def remover_url(index):
     urls = carregar_urls()
     if index < 0 or index >= len(urls):
-        return jsonify({"erro": "URL não encontrada."}), 404
+        return jsonify({"erro": "Não encontrada."}), 404
     urls.pop(index)
     salvar_urls(urls)
     return jsonify({"ok": True})
@@ -217,107 +177,129 @@ def remover_url(index):
 
 @app.route("/ticket", methods=["POST"])
 def criar_ticket():
-    """Abre um chamado diretamente via API."""
     dados    = request.json
     nome     = dados.get("nome", "").strip()
     email    = dados.get("email", "").strip()
-    assunto  = dados.get("assunto", "Solicitação de atendimento").strip()
+    assunto  = dados.get("assunto", "Solicitação").strip()
     mensagem = dados.get("mensagem", "").strip()
-
     if not nome or not email or not mensagem:
         return jsonify({"erro": "Informe nome, email e mensagem."}), 400
-
-    resultado = abrir_chamado(nome, email, assunto, mensagem)
-    if resultado:
-        return jsonify({"ok": True, "mensagem": resultado})
+    numero = abrir_chamado(nome, email, assunto, mensagem)
+    if numero:
+        return jsonify({"ok": True, "numero": numero})
     return jsonify({"erro": "Não foi possível abrir o chamado."}), 500
-
-
-@app.route("/chamados", methods=["GET"])
-def listar_chamados():
-    """Verifica chamados de um cliente pelo e-mail."""
-    email = request.args.get("email", "").strip()
-    if not email:
-        return jsonify({"erro": "Informe o e-mail."}), 400
-    resultado = verificar_chamados(email)
-    return jsonify({"resultado": resultado})
 
 
 @app.route("/chat", methods=["POST"])
 def chat():
     dados    = request.json
     pergunta = dados.get("pergunta", "").strip()
-    email    = dados.get("email", "").strip()
+    historico = dados.get("historico", [])
 
     if not pergunta:
         return jsonify({"erro": "Informe a pergunta."}), 400
 
-    config  = carregar_config()
-    modelo  = config.get("modelo", "sabia-4")
-
-    # Detectar intenções especiais
+    config = carregar_config()
+    modelo = config.get("modelo", "sabia-4")
     pergunta_lower = pergunta.lower()
 
-    # Intenção: verificar chamado
-    if email and any(p in pergunta_lower for p in ["meu chamado", "meu ticket", "minha solicitação", "status", "andamento"]):
-        resultado_chamado = verificar_chamados(email)
-        if resultado_chamado:
-            return jsonify({"resposta": resultado_chamado, "modelo_usado": "osticket", "intencao": "chamado"})
-
-    # Intenção: abrir chamado de troca/devolução
-    intencao_troca = any(p in pergunta_lower for p in [
-        "quero trocar", "trocar produto", "devolver", "devolução",
-        "arrependimento", "produto com defeito", "abrir chamado", "abrir ticket"
+    # Detectar se cliente enviou dados para abrir chamado
+    # Padrão: contém e-mail + número de pedido na mensagem
+    tem_email  = bool(re.search(r"[\w.+-]+@[\w-]+\.\w+", pergunta))
+    tem_pedido = bool(re.search(r"\b\d{2,}\b", pergunta))
+    quer_troca = any(p in pergunta_lower for p in [
+        "trocar", "troca", "devolver", "devolução", "defeito",
+        "abrir chamado", "abrir ticket", "solicitação"
     ])
 
-    # Busca na base de conhecimento do osTicket
-    kb_contexto = buscar_base_conhecimento(pergunta)
+    # Se historico indica que estava em fluxo de troca e agora tem email+pedido
+    em_fluxo_troca = any(
+        "nome completo" in m.get("conteudo", "").lower() or
+        "número do pedido" in m.get("conteudo", "").lower()
+        for m in historico if m.get("papel") == "bot"
+    )
 
-    # Contexto das URLs cadastradas
-    url_contexto = montar_contexto()
+    if em_fluxo_troca and tem_email and tem_pedido:
+        # Extrai dados da mensagem
+        email_match = re.search(r"[\w.+-]+@[\w-]+\.\w+", pergunta)
+        email_cliente = email_match.group(0) if email_match else "não informado"
 
-    # Monta o system prompt
+        # Tenta extrair nome (primeira palavra antes do ; ou ,)
+        partes = re.split(r"[;,]", pergunta)
+        nome_cliente  = partes[0].strip() if partes else "Cliente"
+        pedido_match  = re.search(r"\b(\d{2,})\b", pergunta)
+        num_pedido    = pedido_match.group(1) if pedido_match else "não informado"
+
+        mensagem_ticket = (
+            f"Solicitação de troca/devolução\n"
+            f"Cliente: {nome_cliente}\n"
+            f"E-mail: {email_cliente}\n"
+            f"Pedido: #{num_pedido}\n"
+            f"Mensagem original: {pergunta}"
+        )
+
+        numero = abrir_chamado(
+            nome_cliente, email_cliente,
+            f"Troca/Devolução — Pedido #{num_pedido}",
+            mensagem_ticket
+        )
+
+        if numero:
+            return jsonify({
+                "resposta": (
+                    f"✅ Chamado **#{numero}** aberto com sucesso!\n\n"
+                    f"Você receberá as próximas atualizações no e-mail **{email_cliente}**. "
+                    f"Nossa equipe entrará em contato em breve para orientar o processo de troca. 😊"
+                ),
+                "modelo_usado": "osticket",
+                "intencao": "troca_aberta",
+            })
+
+    # Monta contexto
+    info_extra   = carregar_info()
+    url_contexto = montar_contexto_urls()
+
     system_parts = [
-        "Você é um assistente de atendimento ao cliente de uma loja virtual. "
-        "Responda de forma clara, simpática e objetiva, sempre em português."
+        "Você é um assistente de atendimento ao cliente de uma loja virtual chamada Alex Sarto Shop. "
+        "Responda de forma clara, simpática e objetiva, sempre em português brasileiro."
     ]
 
-    if kb_contexto:
-        system_parts.append(f"\nBase de conhecimento da loja:\n{kb_contexto}")
+    if info_extra:
+        system_parts.append(f"\nInformações da loja:\n{info_extra}")
 
     if url_contexto:
-        system_parts.append(f"\nInformações adicionais:\n{url_contexto}")
+        system_parts.append(f"\nConteúdo adicional:\n{url_contexto}")
 
-    if intencao_troca:
+    if quer_troca:
         system_parts.append(
-            "\nO cliente deseja abrir um chamado de troca ou devolução. "
-            "Oriente-o a informar: nome completo, e-mail e número do pedido. "
-            "Informe que assim que ele fornecer esses dados, o chamado será aberto automaticamente."
+            "\nO cliente quer trocar ou devolver um produto. "
+            "Peça: nome completo, e-mail cadastrado na compra e número do pedido. "
+            "Diga que assim que ele enviar esses dados, o chamado será aberto automaticamente."
+        )
+    elif not info_extra and not url_contexto:
+        system_parts.append(
+            "\nSe não souber a resposta, diga que não sabe e sugira contato pelo WhatsApp ou abertura de chamado."
         )
 
-    if not kb_contexto and not url_contexto:
-        system_parts.append(
-            "\nSe não souber a resposta, diga que não sabe e sugira que o cliente "
-            "entre em contato pelo WhatsApp ou abra um chamado."
-        )
+    system_prompt = "\n".join(system_parts)
 
-    system_prompt = " ".join(system_parts)
+    # Monta mensagens com histórico
+    messages = [{"role": "system", "content": system_prompt}]
+    for m in historico[-6:]:  # últimas 6 mensagens para contexto
+        role = "user" if m.get("papel") == "usuario" else "assistant"
+        messages.append({"role": role, "content": m.get("conteudo", "")})
+    messages.append({"role": "user", "content": pergunta})
 
     response = client.chat.completions.create(
         model=modelo,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": pergunta},
-        ],
+        messages=messages,
         max_tokens=600,
     )
 
-    resposta   = response.choices[0].message.content
     return jsonify({
-        "resposta":     resposta,
+        "resposta":     response.choices[0].message.content,
         "modelo_usado": modelo,
-        "intencao":     "troca" if intencao_troca else "geral",
-        "kb_encontrou": bool(kb_contexto),
+        "intencao":     "troca" if quer_troca else "geral",
     })
 
 
