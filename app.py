@@ -3,9 +3,11 @@ import json
 import re
 import requests
 from flask import Flask, request, jsonify, render_template
+from flask_cors import CORS
 from openai import OpenAI
 
 app = Flask(__name__)
+CORS(app)
 
 CONFIG_FILE = "config.json"
 URLS_FILE   = "urls.json"
